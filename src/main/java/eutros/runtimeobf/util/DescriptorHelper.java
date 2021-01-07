@@ -18,12 +18,6 @@ public class DescriptorHelper {
         return dimensions == 0 ? masked : repeatChar('[', dimensions) + "L" + masked + ";";
     }
 
-    public static Optional<String> descToInternal(String desc) {
-        if (desc.length() <= 0) return Optional.empty();
-        if (desc.charAt(0) != 'L') return Optional.of(desc);
-        return Optional.of(desc.substring(1, desc.length() - 1));
-    }
-
     public static String eraseType(String internalName) {
         return internalName.replace(maskArray(internalName), "java/lang/Object");
     }

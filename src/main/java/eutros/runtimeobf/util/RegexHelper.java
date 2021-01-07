@@ -1,7 +1,5 @@
 package eutros.runtimeobf.util;
 
-import eutros.runtimeobf.function.ThrowingFunction;
-
 import java.util.regex.Matcher;
 
 public class RegexHelper {

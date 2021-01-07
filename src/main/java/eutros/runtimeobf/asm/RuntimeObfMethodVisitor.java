@@ -1,8 +1,8 @@
-package eutros.runtimeobf;
+package eutros.runtimeobf.asm;
 
-import eutros.runtimeobf.function.TriFunction;
-import eutros.runtimeobf.function.TriPredicate;
+import eutros.runtimeobf.Bootstrap;
 import eutros.runtimeobf.util.AsmHelper;
+import eutros.runtimeobf.util.BootstrapHelper;
 import eutros.runtimeobf.util.DescriptorHelper;
 import org.objectweb.asm.*;
 
@@ -11,7 +11,7 @@ import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.regex.Matcher;
 
-public class ReplacingMethodVisitor extends MethodVisitor {
+public class RuntimeObfMethodVisitor extends MethodVisitor {
     private static final Handle obfMethodOrFieldBootstrap = AsmHelper.unreflect(BootstrapHelper.obfMethodOrFieldBootstrap);
     private static final Handle obfTypeBootstrap = AsmHelper.unreflect(BootstrapHelper.obfTypeBootstrap);
 
@@ -21,21 +21,42 @@ public class ReplacingMethodVisitor extends MethodVisitor {
 
     private final Predicate<String> internalNamePredicate;
     private final Function<String, String[]> expandInternalName;
-    private final TriPredicate<String, String, String> fieldNamePredicate;
-    private final TriFunction<String, String, String, String[]> expandFieldName;
-    private final TriPredicate<String, String, String> methodNamePredicate;
-    private final TriFunction<String, String, String, String[]> expandMethodName;
+    private final Predicate<OwnerNameAndDesc> fieldNamePredicate;
+    private final Function<OwnerNameAndDesc, String[]> expandFieldName;
+    private final Predicate<OwnerNameAndDesc> methodNamePredicate;
+    private final Function<OwnerNameAndDesc, String[]> expandMethodName;
 
-    public ReplacingMethodVisitor(MethodVisitor methodVisitor,
-                                  Handle getClassRemapper,
-                                  Handle getNameRemapper,
-                                  Handle getEnv,
-                                  Predicate<String> internalNamePredicate,
-                                  Function<String, String[]> expandInternalName,
-                                  TriPredicate<String, String, String> fieldNamePredicate,
-                                  TriFunction<String, String, String, String[]> expandFieldName,
-                                  TriPredicate<String, String, String> methodNamePredicate,
-                                  TriFunction<String, String, String, String[]> expandMethodName) {
+    private final Predicate<OwnerNameAndDesc> erasedFields;
+    private final Predicate<OwnerNameAndDesc> erasedMethods;
+
+    private boolean sawNew = false;
+
+    /**
+     * @param methodVisitor The method visitor to delegate to.
+     * @param getClassRemapper The handle to use as the getClassRemapper argument in {@link Bootstrap} methods.
+     * @param getNameRemapper The handle to use as the getNameRemapper argument in {@link Bootstrap} methods.
+     * @param getEnv The handle to use as the getEnv argument in {@link Bootstrap} methods.
+     * @param internalNamePredicate A predicate for internal names that need to be remapped and erased.
+     * @param expandInternalName A function that yields the possible internal names a class may have at runtime.
+     * @param fieldNamePredicate A predicate for field names to remap.
+     * @param expandFieldName A function that yields the possible names a field may have at runtime.
+     * @param methodNamePredicate A predicate for method names to remap.
+     * @param expandMethodName A function that yields the possible names a method may have at runtime.
+     * @param erasedFields A predicate for fields whose accesses should involve erasing types and nothing else.
+     * @param erasedMethods A predicate for methods whose invocations should involve erasing types and nothing else.
+     */
+    public RuntimeObfMethodVisitor(MethodVisitor methodVisitor,
+                                   Handle getClassRemapper,
+                                   Handle getNameRemapper,
+                                   Handle getEnv,
+                                   Predicate<String> internalNamePredicate,
+                                   Function<String, String[]> expandInternalName,
+                                   Predicate<OwnerNameAndDesc> fieldNamePredicate,
+                                   Function<OwnerNameAndDesc, String[]> expandFieldName,
+                                   Predicate<OwnerNameAndDesc> methodNamePredicate,
+                                   Function<OwnerNameAndDesc, String[]> expandMethodName,
+                                   Predicate<OwnerNameAndDesc> erasedFields,
+                                   Predicate<OwnerNameAndDesc> erasedMethods) {
         super(Opcodes.ASM9, methodVisitor);
         this.getClassRemapper = getClassRemapper;
         this.getNameRemapper = getNameRemapper;
@@ -46,9 +67,48 @@ public class ReplacingMethodVisitor extends MethodVisitor {
         this.expandFieldName = expandFieldName;
         this.methodNamePredicate = methodNamePredicate;
         this.expandMethodName = expandMethodName;
+        this.erasedFields = erasedFields;
+        this.erasedMethods = erasedMethods;
+    }
+
+    public RuntimeObfMethodVisitor(MethodVisitor methodVisitor,
+                                   Handle getClassRemapper,
+                                   Handle getNameRemapper,
+                                   Handle getEnv,
+                                   Predicate<String> internalNamePredicate,
+                                   Function<String, String[]> expandInternalName,
+                                   Predicate<OwnerNameAndDesc> fieldNamePredicate,
+                                   Function<OwnerNameAndDesc, String[]> expandFieldName,
+                                   Predicate<OwnerNameAndDesc> methodNamePredicate,
+                                   Function<OwnerNameAndDesc, String[]> expandMethodName) {
+        this(methodVisitor,
+                getClassRemapper,
+                getNameRemapper,
+                getEnv,
+                internalNamePredicate,
+                expandInternalName,
+                fieldNamePredicate,
+                expandFieldName,
+                methodNamePredicate,
+                expandMethodName,
+                $ -> false,
+                $ -> false);
     }
 
     protected boolean visitObfMethodOrFieldBootstrap(int opcode, String owner, String name, String desc) {
+        boolean method = desc.charAt(0) == '(';
+        String erasedDesc = DescriptorHelper.eraseDescriptorTypes(desc, internalNamePredicate);
+        OwnerNameAndDesc ownerNameAndDesc = new OwnerNameAndDesc(owner, name, desc);
+
+        if ((method ? erasedMethods : erasedFields).test(ownerNameAndDesc)) {
+            if (method) {
+                super.visitMethodInsn(opcode, owner, name, erasedDesc, opcode == Opcodes.INVOKEINTERFACE);
+            } else {
+                super.visitFieldInsn(opcode, owner, name, erasedDesc);
+            }
+            return true;
+        }
+
         String[] owners;
         String[] names;
         String[] descs;
@@ -56,9 +116,8 @@ public class ReplacingMethodVisitor extends MethodVisitor {
         if (internalNamePredicate.test(owner)) owners = expandInternalName.apply(owner);
         else owners = null;
 
-        boolean method = desc.charAt(0) == '(';
-        TriPredicate<String, String, String> namePredicate;
-        TriFunction<String, String, String, String[]> expandName;
+        Predicate<OwnerNameAndDesc> namePredicate;
+        Function<OwnerNameAndDesc, String[]> expandName;
         if (method) {
             namePredicate = methodNamePredicate;
             expandName = expandMethodName;
@@ -67,7 +126,7 @@ public class ReplacingMethodVisitor extends MethodVisitor {
             expandName = expandFieldName;
         }
 
-        if (namePredicate.test(owner, name, desc)) names = expandName.apply(owner, name, desc);
+        if (namePredicate.test(ownerNameAndDesc)) names = expandName.apply(ownerNameAndDesc);
         else names = null;
 
         descs = expandDescriptor(desc);
@@ -105,7 +164,13 @@ public class ReplacingMethodVisitor extends MethodVisitor {
         System.arraycopy(names, 0, args, BootstrapHelper.OMOFB_FIXED_ARGS + expectedLength, expectedLength);
         System.arraycopy(descs, 0, args, BootstrapHelper.OMOFB_FIXED_ARGS + 2 * expectedLength, expectedLength);
 
-        super.visitInvokeDynamicInsn(name, DescriptorHelper.eraseDescriptorTypes(desc, internalNamePredicate), obfMethodOrFieldBootstrap, args);
+        boolean constructor = "<init>".equals(name);
+        if (constructor) {
+            name = "construct";
+            erasedDesc = erasedDesc.substring(0, erasedDesc.length() - 1) +
+                    'L' + DescriptorHelper.eraseType(owner) + ';';
+        }
+        super.visitInvokeDynamicInsn(name, erasedDesc, obfMethodOrFieldBootstrap, args);
         return true;
     }
 
@@ -123,7 +188,7 @@ public class ReplacingMethodVisitor extends MethodVisitor {
 
     private String[] expandDescriptor(String desc) {
         boolean expanded = false;
-        StringBuffer[] bufs = new StringBuffer[] { new StringBuffer() };
+        StringBuffer[] bufs = new StringBuffer[]{new StringBuffer()};
         Matcher matcher = DescriptorHelper.DESCRIPTOR_NAME_PATTERN.matcher(desc);
         while (matcher.find()) {
             String internalName = matcher.group();
@@ -160,7 +225,8 @@ public class ReplacingMethodVisitor extends MethodVisitor {
         String name;
         switch (opcode) {
             case Opcodes.NEW:
-                return; // <init>s are replaced already
+                sawNew = true; // ignore the next DUP insn
+                return;
             case Opcodes.ANEWARRAY:
                 desc = "(I)" + DescriptorHelper.repeatChar('[', DescriptorHelper.arrayDimensions(type) + 1) + "Ljava/lang/Object;";
                 name = "newArray";
@@ -178,6 +244,14 @@ public class ReplacingMethodVisitor extends MethodVisitor {
                 throw new IllegalArgumentException();
         }
         visitObfTypeBootstrap(name, desc, opcode, type);
+    }
+
+    @Override
+    public void visitInsn(int opcode) {
+        if (!sawNew || opcode != Opcodes.DUP) {
+            super.visitInsn(opcode);
+        }
+        sawNew = false;
     }
 
     @Override

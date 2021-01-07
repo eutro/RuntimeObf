@@ -1,80 +1,20 @@
 package eutros.runtimeobf.tests;
 
-import eutros.runtimeobf.ReplacingMethodVisitor;
+import eutros.runtimeobf.asm.OwnerNameAndDesc;
+import eutros.runtimeobf.asm.RuntimeObfMethodVisitor;
 import eutros.runtimeobf.function.ClassNameRemapperFunction;
 import eutros.runtimeobf.function.NameRemapperFunction;
-import eutros.runtimeobf.function.TriFunction;
 import eutros.runtimeobf.util.AsmHelper;
 import org.junit.jupiter.api.Test;
-import org.objectweb.asm.*;
+import org.objectweb.asm.ClassVisitor;
+import org.objectweb.asm.Handle;
+import org.objectweb.asm.MethodVisitor;
+import org.objectweb.asm.Opcodes;
 
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.StringJoiner;
 
 public class ReplacementTests {
-
-    private static ClassReader getClassReader(Class<?> clazz) {
-        String resName = clazz.getName().replace('.', '/') + ".class";
-        try (InputStream is = clazz.getClassLoader().getResourceAsStream(resName)) {
-            assert is != null;
-            return new ClassReader(is);
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    private static class Loader extends ClassLoader {
-        public Class<?> define(Class<?> other, byte[] bytes) {
-            return defineClass(other.getName(), bytes, 0, bytes.length);
-        }
-    }
-
-    private static Class<?> tryTransform(Class<?> clazz) {
-        ClassWriter cw = new ClassWriter(0);
-        getClassReader(clazz).accept(new StubReplacingClassVisitor(cw), 0);
-        byte[] bytes = cw.toByteArray();
-        try {
-            return forceVerify(new Loader().define(clazz, bytes));
-        } catch (Error e) {
-            String dumpLoc = System.getenv("eutros.runtimeobf.tests.dump_classes");
-            if (dumpLoc != null) {
-                Path path = new File(dumpLoc).toPath().resolve(clazz.getName().replace('.', '/') + ".class");
-                try {
-                    Files.createDirectories(path.getParent());
-                    try (OutputStream os = Files.newOutputStream(path)) {
-                        os.write(bytes);
-                    }
-                } catch (IOException ioe) {
-                    throw new RuntimeException("Exception dumping", e);
-                }
-
-                throw new RuntimeException("Error with class, dumped to " + path, e);
-            }
-            throw e;
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T> T tryConstructTransformed(Class<T> clazz) {
-        try {
-            return (T) tryTransform(clazz).getConstructor().newInstance();
-        } catch (ReflectiveOperationException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    @SuppressWarnings("ResultOfMethodCallIgnored")
-    private static Class<?> forceVerify(Class<?> clazz) {
-        clazz.getMethods();
-        return clazz;
-    }
 
     private static final Handle ZERO_HANDLE;
     private static final Handle IDENTITY_CLASSNAME_HANDLE;
@@ -95,16 +35,13 @@ public class ReplacementTests {
     }
 
     private static final Map<String, String[]> classMappings = new HashMap<>();
-    private static final Map<String, String[]> fieldNameMappings = new HashMap<>();
-    private static final Map<String, String[]> methodNameMappings = new HashMap<>();
-
-    private static final TriFunction<String, String, String, String> joinTabs = (s, s2, s3) ->
-            new StringJoiner("\t").add(s).add(s2).add(s3).toString();
+    private static final Map<OwnerNameAndDesc, String[]> fieldNameMappings = new HashMap<>();
+    private static final Map<OwnerNameAndDesc, String[]> methodNameMappings = new HashMap<>();
 
     static {
         classMappings.put("java/lang/String", new String[] { "java/lang/String" });
-        fieldNameMappings.put("java/lang/Integer\tMAX_VALUE\tI", new String[] { "MAX_VALUE" });
-        methodNameMappings.put("java/lang/Object\ttoString\t()Ljava/lang/String;", new String[] { "toString" });
+        fieldNameMappings.put(new OwnerNameAndDesc("java/lang/Integer", "MAX_VALUE", "I"), new String[] { "MAX_VALUE" });
+        methodNameMappings.put(new OwnerNameAndDesc("java/lang/Object", "toString", "()Ljava/lang/String;"), new String[] { "toString" });
     }
 
     private static class StubReplacingClassVisitor extends ClassVisitor {
@@ -115,16 +52,16 @@ public class ReplacementTests {
         @Override
         public MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
             MethodVisitor mv = super.visitMethod(access, name, descriptor, signature, exceptions);
-            return new ReplacingMethodVisitor(mv, IDENTITY_CLASSNAME_HANDLE, IDENTITY_NAME_HANDLE, ZERO_HANDLE,
+            return new RuntimeObfMethodVisitor(mv, IDENTITY_CLASSNAME_HANDLE, IDENTITY_NAME_HANDLE, ZERO_HANDLE,
                     classMappings::containsKey, classMappings::get,
-                    joinTabs.andThen(fieldNameMappings::containsKey), joinTabs.andThen(fieldNameMappings::get),
-                    joinTabs.andThen(methodNameMappings::containsKey), joinTabs.andThen(methodNameMappings::get));
+                    fieldNameMappings::containsKey, fieldNameMappings::get,
+                    methodNameMappings::containsKey, methodNameMappings::get);
         }
     }
 
     @Test
     public void testTypes() {
-        tryConstructTransformed(TypesTest.class);
+        TestHelper.tryConstructTransformed(TypesTest.class, StubReplacingClassVisitor::new);
     }
 
     @SuppressWarnings({ "unused", "ConstantConditions", "UnusedAssignment" })
@@ -140,7 +77,7 @@ public class ReplacementTests {
 
     @Test
     public void testFrames() {
-        tryConstructTransformed(FramesTest.class);
+        TestHelper.tryConstructTransformed(FramesTest.class, StubReplacingClassVisitor::new);
     }
 
     @SuppressWarnings({ "unused", "UnusedAssignment" })

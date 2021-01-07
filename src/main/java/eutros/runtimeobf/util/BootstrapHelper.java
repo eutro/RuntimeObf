@@ -1,4 +1,6 @@
-package eutros.runtimeobf;
+package eutros.runtimeobf.util;
+
+import eutros.runtimeobf.Bootstrap;
 
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;

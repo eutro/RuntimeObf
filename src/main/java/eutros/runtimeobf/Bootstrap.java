@@ -86,7 +86,7 @@ public class Bootstrap {
         ClassLoader loader = caller.lookupClass().getClassLoader();
         boolean methodCall = mappedDescriptor.charAt(0) == '(';
 
-        Class<?> ownerClass = Class.forName(mappedOwner, false, loader);
+        Class<?> ownerClass = Class.forName(mappedOwner.replace('/', '.'), false, loader);
         MethodType targetType = MethodType.fromMethodDescriptorString(methodCall ? mappedDescriptor : "()" + mappedDescriptor, loader);
 
         MethodHandle mh;
